@@ -492,6 +492,6 @@ func TestCommandHelpMessage(t *testing.T) {
 	assert.Contains(t, cmd.Long, "PruningCronjobErrorSRE")
 	assert.Contains(t, cmd.Long, "Job and pod status")
 	assert.Contains(t, cmd.Long, "OpenShift CLI")
-	assert.Contains(t, cmd.Long, "oc login")
+	assert.Contains(t, cmd.Long, "ocm backplane login")
 	assert.Contains(t, cmd.Example, "osdctl assist pruning-cronjob-error-sre")
 }
