@@ -15,7 +15,7 @@ func TestNewCmdPruningCronjobErrorSRE(t *testing.T) {
 	cmd := NewCmdPruningCronjobErrorSRE()
 	
 	assert.NotNil(t, cmd)
-	assert.Equal(t, "pruningcronjoberrorsre", cmd.Use)
+	assert.Equal(t, "pruning-cronjob-error-sre", cmd.Use)
 	assert.Contains(t, cmd.Short, "Collect diagnostic information")
 	assert.Contains(t, cmd.Long, "PruningCronjobErrorSRE")
 	assert.Contains(t, cmd.Long, "diagnostic data")
@@ -493,5 +493,5 @@ func TestCommandHelpMessage(t *testing.T) {
 	assert.Contains(t, cmd.Long, "Job and pod status")
 	assert.Contains(t, cmd.Long, "OpenShift CLI")
 	assert.Contains(t, cmd.Long, "oc login")
-	assert.Contains(t, cmd.Example, "osdctl assist pruningcronjoberrorsre")
+	assert.Contains(t, cmd.Example, "osdctl assist pruning-cronjob-error-sre")
 }

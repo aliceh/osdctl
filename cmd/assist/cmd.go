@@ -21,6 +21,7 @@ or issue type and collects all relevant information based on standard operating 
 	}
 
 	assistCmd.AddCommand(NewCmdPruningCronjobErrorSRE())
+	assistCmd.AddCommand(NewCmdClusterMonitoringErrorBudgetBurnSRE())
 
 	return assistCmd
 }

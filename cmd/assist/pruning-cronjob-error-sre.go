@@ -86,11 +86,11 @@ func loadConfigValue(configKey, envVarName, defaultValue string) string {
 	return defaultValue
 }
 
-// NewCmdPruningCronjobErrorSRE implements the pruningcronjoberrorsre command
+// NewCmdPruningCronjobErrorSRE implements the pruning-cronjob-error-sre command
 func NewCmdPruningCronjobErrorSRE() *cobra.Command {
 	ops := newPruningCronjobOptions()
 	cmd := &cobra.Command{
-		Use:   "pruningcronjoberrorsre",
+		Use:   "pruning-cronjob-error-sre",
 		Short: "Collect diagnostic information for PruningCronjobErrorSRE alert",
 		Long: `Collects all diagnostic information needed to troubleshoot the PruningCronjobErrorSRE alert.
 
@@ -111,25 +111,25 @@ is generated. The output can optionally be archived as a tarball.
 
 The command requires:
   - OpenShift CLI (oc) to be installed and available in PATH
-  - Active cluster connection (via 'oc login' or 'ocm backplane login')
+  - Active cluster connection (via 'ocm backplane login')
 
 For troubleshooting steps, refer to:
   ~/ops-sop/v4/alerts/PruningCronjobErrorSRE.md
 `,
 		Example: `  # Collect diagnostics with default output directory
-  osdctl assist pruningcronjoberrorsre
+  osdctl assist pruning-cronjob-error-sre
 
   # Collect diagnostics to a custom directory
-  osdctl assist pruningcronjoberrorsre --output-dir /tmp/my-diagnostics
+  osdctl assist pruning-cronjob-error-sre --output-dir /tmp/my-diagnostics
 
   # Collect diagnostics and analyze with LLM
-  osdctl assist pruningcronjoberrorsre --analyze
+  osdctl assist pruning-cronjob-error-sre --analyze
 
   # Analyze existing directory of diagnostic artifacts
-  osdctl assist pruningcronjoberrorsre --analyze-existing /path/to/existing-diagnostics
+  osdctl assist pruning-cronjob-error-sre --analyze-existing /path/to/existing-diagnostics
 
   # Collect diagnostics with custom LLM configuration
-  osdctl assist pruningcronjoberrorsre --analyze --llm-model gpt-4o --llm-base-url https://api.openai.com/v1`,
+  osdctl assist pruning-cronjob-error-sre --analyze --llm-model gpt-4o --llm-base-url https://api.openai.com/v1`,
 		Args:              cobra.NoArgs,
 		DisableAutoGenTag: true,
 		Run: func(cmd *cobra.Command, args []string) {
@@ -331,7 +331,7 @@ func (o *pruningCronjobOptions) run() error {
 
 		// Check if we're logged into a cluster
 		if err := o.commandExecutor("cluster-info", []string{}, "/dev/null"); err != nil {
-			red.Println("Error: Not logged into a cluster. Please run 'oc login' or 'ocm backplane login' first.")
+			red.Println("Error: Not logged into a cluster. Please run 'ocm backplane login' first.")
 			return err
 		}
 
