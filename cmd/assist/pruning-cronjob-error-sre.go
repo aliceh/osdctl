@@ -1,6 +1,7 @@
 package assist
 
 import (
+	"bufio"
 	"bytes"
 	_ "embed"
 	"encoding/json"
@@ -418,7 +419,7 @@ func (o *pruningCronjobOptions) run() error {
 		if err != nil {
 			fmt.Printf("Warning: Failed to extract diagnostic content: %v\n", err)
 		} else {
-			analysis, err := o.analyzeWithLLM(diagnosticContent)
+			analysis, conversationHistory, err := o.analyzeWithLLM(diagnosticContent)
 			if err != nil {
 				fmt.Printf("Warning: LLM analysis failed: %v\n", err)
 			} else {
@@ -432,6 +433,11 @@ func (o *pruningCronjobOptions) run() error {
 					fmt.Printf("Warning: Failed to save LLM analysis: %v\n", err)
 				} else {
 					green.Printf("✓ LLM analysis saved to 18-llm-analysis.txt\n")
+				}
+
+				// Interactive follow-up questions
+				if err := o.interactiveFollowUp(conversationHistory, green, yellow); err != nil {
+					fmt.Printf("Warning: Interactive follow-up failed: %v\n", err)
 				}
 			}
 		}
@@ -996,8 +1002,14 @@ func validateAPIKey(apiKey string) error {
 	return nil
 }
 
-// analyzeWithLLM sends diagnostic content to LLM for analysis
-func (o *pruningCronjobOptions) analyzeWithLLM(diagnosticContent string) (string, error) {
+// Message represents a message in the conversation history
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// analyzeWithLLM sends diagnostic content to LLM for analysis and returns the response and conversation history
+func (o *pruningCronjobOptions) analyzeWithLLM(diagnosticContent string) (string, []Message, error) {
 	systemPrompt := systemPromptTemplate
 	// Fallback to default if embed failed (shouldn't happen, but be safe)
 	if systemPrompt == "" {
@@ -1012,25 +1024,28 @@ Analyze the provided diagnostic data and provide:
 Be concise but thorough. Focus on actionable insights.`
 	}
 
-	requestBody := map[string]interface{}{
-		"model": o.llmModel,
-		"messages": []map[string]string{
-			{
-				"role":    "system",
-				"content": systemPrompt,
-			},
-			{
-				"role":    "user",
-				"content": fmt.Sprintf("Please analyze the following pruning cronjob diagnostic information from an OpenShift cluster:\n\n%s", diagnosticContent),
-			},
+	// Build conversation history
+	conversationHistory := []Message{
+		{
+			Role:    "system",
+			Content: systemPrompt,
 		},
+		{
+			Role:    "user",
+			Content: fmt.Sprintf("Please analyze the following pruning cronjob diagnostic information from an OpenShift cluster:\n\n%s", diagnosticContent),
+		},
+	}
+
+	requestBody := map[string]interface{}{
+		"model":    o.llmModel,
+		"messages": conversationHistory,
 		"temperature": 0.3,
 		"max_tokens":  4000,
 	}
 
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
+		return "", nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	// Construct URL - ensure base URL doesn't have trailing slash, and endpoint does
@@ -1040,7 +1055,7 @@ Be concise but thorough. Focus on actionable insights.`
 	
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return "", nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Set headers - ensure API key is properly trimmed (remove any whitespace, newlines, etc.)
@@ -1058,7 +1073,7 @@ Be concise but thorough. Focus on actionable insights.`
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to send request: %w", err)
+		return "", nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -1080,7 +1095,7 @@ Be concise but thorough. Focus on actionable insights.`
 			
 			// Provide generic guidance for authentication errors
 			if resp.StatusCode == 401 {
-				return "", fmt.Errorf("authentication failed (401): %s\n\nTroubleshooting:\n"+
+				return "", nil, fmt.Errorf("authentication failed (401): %s\n\nTroubleshooting:\n"+
 					"1. Verify your API key is correct\n"+
 					"2. Ensure there are no extra spaces or newlines in the key\n"+
 					"3. Check your environment variables: LLM_API_KEY, OPENAI_API_KEY, etc.\n"+
@@ -1090,7 +1105,7 @@ Be concise but thorough. Focus on actionable insights.`
 			}
 		}
 		
-		return "", fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, errorMsg)
+		return "", nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, errorMsg)
 	}
 
 	var response struct {
@@ -1102,14 +1117,182 @@ Be concise but thorough. Focus on actionable insights.`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+		return "", nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	if len(response.Choices) == 0 {
-		return "", fmt.Errorf("no response from LLM")
+		return "", nil, fmt.Errorf("no response from LLM")
 	}
 
-	return response.Choices[0].Message.Content, nil
+	assistantResponse := response.Choices[0].Message.Content
+	
+	// Add assistant response to conversation history
+	conversationHistory = append(conversationHistory, Message{
+		Role:    "assistant",
+		Content: assistantResponse,
+	})
+
+	return assistantResponse, conversationHistory, nil
+}
+
+// askFollowUpQuestion sends a follow-up question to the LLM with conversation history
+func (o *pruningCronjobOptions) askFollowUpQuestion(conversationHistory []Message, question string) (string, []Message, error) {
+	// Add user question to conversation history
+	conversationHistory = append(conversationHistory, Message{
+		Role:    "user",
+		Content: question,
+	})
+
+	requestBody := map[string]interface{}{
+		"model":    o.llmModel,
+		"messages": conversationHistory,
+		"temperature": 0.3,
+		"max_tokens":  4000,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", conversationHistory, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Construct URL
+	baseURL := strings.TrimSuffix(o.llmBaseURL, "/")
+	endpoint := "/chat/completions"
+	url := baseURL + endpoint
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", conversationHistory, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers
+	apiKey := strings.TrimSpace(o.llmAPIKey)
+	apiKey = strings.ReplaceAll(apiKey, "\n", "")
+	apiKey = strings.ReplaceAll(apiKey, "\r", "")
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{
+		Timeout: 120 * time.Second,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", conversationHistory, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		var errorResp struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		
+		errorMsg := string(body)
+		if err := json.Unmarshal(body, &errorResp); err == nil && errorResp.Error.Message != "" {
+			errorMsg = errorResp.Error.Message
+		}
+		
+		return "", conversationHistory, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, errorMsg)
+	}
+
+	var response struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return "", conversationHistory, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if len(response.Choices) == 0 {
+		return "", conversationHistory, fmt.Errorf("no response from LLM")
+	}
+
+	assistantResponse := response.Choices[0].Message.Content
+	
+	// Add assistant response to conversation history
+	conversationHistory = append(conversationHistory, Message{
+		Role:    "assistant",
+		Content: assistantResponse,
+	})
+
+	return assistantResponse, conversationHistory, nil
+}
+
+// interactiveFollowUp handles interactive follow-up questions
+func (o *pruningCronjobOptions) interactiveFollowUp(conversationHistory []Message, green, yellow *color.Color) error {
+	scanner := bufio.NewScanner(os.Stdin)
+	
+	yellow.Println("\n=== Interactive Follow-up ===")
+	fmt.Println("You can ask follow-up questions about the analysis. Type 'exit' or 'quit' to finish.")
+	fmt.Println()
+
+	for {
+		green.Print("Question (or 'exit' to finish): ")
+		
+		if !scanner.Scan() {
+			// Handle EOF (Ctrl+D)
+			if err := scanner.Err(); err != nil {
+				return fmt.Errorf("error reading input: %w", err)
+			}
+			break
+		}
+
+		question := strings.TrimSpace(scanner.Text())
+		
+		// Check for exit commands
+		if question == "" {
+			continue
+		}
+		if strings.ToLower(question) == "exit" || strings.ToLower(question) == "quit" || strings.ToLower(question) == "q" {
+			green.Println("Exiting interactive mode.")
+			break
+		}
+
+		// Ask the follow-up question
+		yellow.Println("\nThinking...")
+		response, updatedHistory, err := o.askFollowUpQuestion(conversationHistory, question)
+		if err != nil {
+			fmt.Printf("Error: Failed to get response: %v\n", err)
+			continue
+		}
+
+		// Update conversation history
+		conversationHistory = updatedHistory
+
+		// Display response
+		green.Println("\n=== Response ===")
+		fmt.Println(response)
+		fmt.Println()
+
+		// Append to analysis file
+		analysisFile := filepath.Join(o.outputDir, "18-llm-analysis.txt")
+		appendContent := fmt.Sprintf("\n\n=== Follow-up Question ===\n%s\n\n=== Response ===\n%s\n", question, response)
+		if err := o.appendToFile(analysisFile, appendContent); err != nil {
+			fmt.Printf("Warning: Failed to append follow-up to analysis file: %v\n", err)
+		}
+	}
+
+	return nil
+}
+
+// appendToFile appends content to a file
+func (o *pruningCronjobOptions) appendToFile(filePath string, content string) error {
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = file.WriteString(content)
+	return err
 }
 
 // Helper functions for min/max

@@ -29,6 +29,11 @@ type HCPCluster struct {
 	serviceClusterName    string
 }
 
+// ManagementClusterName returns the management cluster name
+func (h HCPCluster) ManagementClusterName() string {
+	return h.managementClusterName
+}
+
 var ErrUnsupportedCluster = fmt.Errorf("Not an HCP or MC Cluster")
 
 func FetchClusterDetails(clusterKey string) (hcpCluster HCPCluster, error error) {

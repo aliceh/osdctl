@@ -163,6 +163,11 @@ func getStorageAccessToken() (string, error) {
 	return getScopedAccessToken(DTStorageVaultPath, DTStorageScopes)
 }
 
+// GetStorageAccessToken is an exported wrapper for getStorageAccessToken
+func GetStorageAccessToken() (string, error) {
+	return getStorageAccessToken()
+}
+
 type DTQueryPayload struct {
 	Query            string `json:"query"`
 	MaxResultRecords int    `json:"maxResultRecords"`
@@ -217,6 +222,11 @@ type DTDocument struct {
 	Id   string `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"`
+}
+
+// GetDTQueryExecution is an exported wrapper for getDTQueryExecution
+func GetDTQueryExecution(dtURL string, accessToken string, query string) (reqToken string, error error) {
+	return getDTQueryExecution(dtURL, accessToken, query)
 }
 
 func getDTQueryExecution(dtURL string, accessToken string, query string) (reqToken string, error error) {
@@ -366,6 +376,11 @@ func getDocumentIDByNameAndType(dtURL string, accessToken string, docName string
 	dtDashboard := dtDocResult.Documents[0]
 
 	return dtDashboard.Id, nil
+}
+
+// GetLogs is an exported wrapper for getLogs
+func GetLogs(dtURL string, accessToken string, requestToken string, dumpWriter io.Writer) error {
+	return getLogs(dtURL, accessToken, requestToken, dumpWriter)
 }
 
 func getLogs(dtURL string, accessToken string, requestToken string, dumpWriter io.Writer) error {
