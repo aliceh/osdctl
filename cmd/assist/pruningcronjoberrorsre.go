@@ -16,6 +16,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 )
 
@@ -23,7 +24,9 @@ import (
 var systemPromptTemplate string
 
 type pruningCronjobOptions struct {
-	outputDir string
+	outputDir      string
+	existingDir    string // Directory with existing artifacts to analyze
+	skipCollection bool   // Skip collection if analyzing existing directory
 	// LLM analysis options
 	enableLLMAnalysis bool
 	llmAPIKey         string
@@ -49,6 +52,38 @@ func safeColorPrintf(c *color.Color, format string, args ...interface{}) {
 	} else {
 		fmt.Printf(format, args...)
 	}
+}
+
+// loadConfigValue reads a value from ~/.config/osdctl config file, then falls back to environment variable
+func loadConfigValue(configKey, envVarName, defaultValue string) string {
+	// Try to read from config file first
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		configPath := filepath.Join(homeDir, ".config", "osdctl")
+		if _, err := os.Stat(configPath); err == nil {
+			// Create a new viper instance to avoid conflicts
+			v := viper.New()
+			v.SetConfigFile(configPath)
+			v.SetConfigType("yaml")
+			if err := v.ReadInConfig(); err == nil {
+				if value := v.GetString(configKey); value != "" {
+					// Remove quotes if present (YAML may have quoted strings)
+					value = strings.Trim(value, "\"'")
+					return strings.TrimSpace(value)
+				}
+			}
+		}
+	}
+	
+	// Fall back to environment variable if envVarName is provided
+	if envVarName != "" {
+		if envValue := os.Getenv(envVarName); envValue != "" {
+			return strings.TrimSpace(envValue)
+		}
+	}
+	
+	// Return default if provided
+	return defaultValue
 }
 
 // NewCmdPruningCronjobErrorSRE implements the pruningcronjoberrorsre command
@@ -90,6 +125,9 @@ For troubleshooting steps, refer to:
   # Collect diagnostics and analyze with LLM
   osdctl assist pruningcronjoberrorsre --analyze
 
+  # Analyze existing directory of diagnostic artifacts
+  osdctl assist pruningcronjoberrorsre --analyze-existing /path/to/existing-diagnostics
+
   # Collect diagnostics with custom LLM configuration
   osdctl assist pruningcronjoberrorsre --analyze --llm-model gpt-4o --llm-base-url https://api.openai.com/v1`,
 		Args:              cobra.NoArgs,
@@ -101,10 +139,11 @@ For troubleshooting steps, refer to:
 	}
 
 	cmd.Flags().StringVar(&ops.outputDir, "output-dir", "", "Output directory for diagnostic files (default: pruning-cronjob-diagnostics-TIMESTAMP)")
+	cmd.Flags().StringVar(&ops.existingDir, "analyze-existing", "", "Path to existing directory of diagnostic artifacts to analyze with LLM (skips collection)")
 	cmd.Flags().BoolVar(&ops.enableLLMAnalysis, "analyze", false, "Enable LLM analysis of collected diagnostic files")
-	cmd.Flags().StringVar(&ops.llmAPIKey, "llm-api-key", "", "LLM API key (default: OPENAI_API_KEY env var)")
-	cmd.Flags().StringVar(&ops.llmBaseURL, "llm-base-url", "", "LLM API base URL (default: OPENAI_BASE_URL env var or https://api.openai.com/v1)")
-	cmd.Flags().StringVar(&ops.llmModel, "llm-model", "gpt-4o-mini", "LLM model to use for analysis (default: AI_MODEL_NAME env var or gpt-4o-mini)")
+	cmd.Flags().StringVar(&ops.llmAPIKey, "llm-api-key", "", "LLM API key (default: checks ~/.config/osdctl OPENAI_API_KEY, then env vars: LLM_API_KEY, OPENAI_API_KEY, etc.)")
+	cmd.Flags().StringVar(&ops.llmBaseURL, "llm-base-url", "", "LLM API base URL (default: checks ~/.config/osdctl OPENAI_BASE_URL, then env vars, or https://api.openai.com/v1)")
+	cmd.Flags().StringVar(&ops.llmModel, "llm-model", "gpt-4o-mini", "LLM model to use for analysis (default: checks ~/.config/osdctl AI_MODEL_NAME, then env vars, or gpt-4o-mini)")
 	return cmd
 }
 
@@ -116,36 +155,105 @@ func newPruningCronjobOptions() *pruningCronjobOptions {
 }
 
 func (o *pruningCronjobOptions) complete(cmd *cobra.Command, _ []string) error {
-	if o.outputDir == "" {
+	// If analyzing existing directory, set it as outputDir and skip collection
+	if o.existingDir != "" {
+		// Validate existing directory exists
+		if info, err := os.Stat(o.existingDir); err != nil {
+			return fmt.Errorf("existing directory does not exist or is not accessible: %w", err)
+		} else if !info.IsDir() {
+			return fmt.Errorf("path is not a directory: %s", o.existingDir)
+		}
+		o.outputDir = o.existingDir
+		o.skipCollection = true
+		o.enableLLMAnalysis = true // Automatically enable analysis when using existing directory
+	} else if o.outputDir == "" {
 		timestamp := time.Now().Format("20060102-150405")
 		o.outputDir = fmt.Sprintf("pruning-cronjob-diagnostics-%s", timestamp)
 	}
 
-	// Set LLM defaults from environment if not provided
+	// Set LLM defaults from config file, then environment, then defaults
 	if o.enableLLMAnalysis {
-		// API Key: check flag first, then environment variable
+		// API Key: Priority: flag > config file > environment variables > error
 		if o.llmAPIKey == "" {
-			o.llmAPIKey = os.Getenv("OPENAI_API_KEY")
+			// Check config file first
+			if configKey := loadConfigValue("OPENAI_API_KEY", "OPENAI_API_KEY", ""); configKey != "" {
+				o.llmAPIKey = configKey
+			} else {
+				// Check multiple possible environment variable names
+				envVarNames := []string{"LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"}
+				for _, envVar := range envVarNames {
+					if envKey := os.Getenv(envVar); envKey != "" {
+						o.llmAPIKey = strings.TrimSpace(envKey)
+						break
+					}
+				}
+			}
+		} else {
+			// Also trim if provided via flag
+			o.llmAPIKey = strings.TrimSpace(o.llmAPIKey)
 		}
 		
-		// Base URL: check flag first, then environment variable, then default
+		// Base URL: Priority: flag > config file > environment variables > default
 		if o.llmBaseURL == "" {
-			o.llmBaseURL = os.Getenv("OPENAI_BASE_URL")
-			if o.llmBaseURL == "" {
-				o.llmBaseURL = "https://api.openai.com/v1"
+			// Check config file first
+			if configURL := loadConfigValue("OPENAI_BASE_URL", "OPENAI_BASE_URL", ""); configURL != "" {
+				o.llmBaseURL = configURL
+			} else {
+				// Check multiple possible environment variable names
+				envVarNames := []string{"LLM_BASE_URL", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL", "GOOGLE_BASE_URL"}
+				for _, envVar := range envVarNames {
+					if envURL := os.Getenv(envVar); envURL != "" {
+						o.llmBaseURL = strings.TrimSpace(envURL)
+						break
+					}
+				}
+				if o.llmBaseURL == "" {
+					o.llmBaseURL = "https://api.openai.com/v1"
+				}
 			}
 		}
 		
-		// Model: check if flag was explicitly set, if not use environment variable, then default
-		// If flag wasn't changed by user, use environment variable if available
+		// Model: Priority: flag (if explicitly set) > config file > environment variables > default
+		// Only override default if flag wasn't explicitly changed by user
 		if !cmd.Flags().Changed("llm-model") {
-			if envModel := os.Getenv("AI_MODEL_NAME"); envModel != "" {
-				o.llmModel = envModel
+			// Check config file first
+			if configModel := loadConfigValue("AI_MODEL_NAME", "AI_MODEL_NAME", ""); configModel != "" {
+				o.llmModel = configModel
+			} else {
+				envVarNames := []string{"LLM_MODEL", "AI_MODEL_NAME", "OPENAI_MODEL", "ANTHROPIC_MODEL", "GOOGLE_MODEL"}
+				for _, envVar := range envVarNames {
+					if envModel := os.Getenv(envVar); envModel != "" {
+						o.llmModel = strings.TrimSpace(envModel)
+						break
+					}
+				}
 			}
 		}
 		
+		// Validate required configuration
 		if o.llmAPIKey == "" {
-			return fmt.Errorf("LLM analysis enabled but no API key provided. Set --llm-api-key or OPENAI_API_KEY environment variable")
+			// Check if any of the common environment variables exist
+			envVarNames := []string{"LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"}
+			var foundVars []string
+			for _, envVar := range envVarNames {
+				if os.Getenv(envVar) != "" {
+					foundVars = append(foundVars, envVar)
+				}
+			}
+			if len(foundVars) > 0 {
+				return fmt.Errorf("LLM analysis enabled but API key from environment variable(s) %v appears to be empty or invalid", foundVars)
+			}
+			return fmt.Errorf("LLM analysis enabled but no API key provided. Set --llm-api-key flag or one of these environment variables: LLM_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY")
+		}
+		
+		// Validate API key format (basic check)
+		if err := validateAPIKey(o.llmAPIKey); err != nil {
+			// Show first few characters for debugging (safely)
+			keyPreview := o.llmAPIKey
+			if len(keyPreview) > 20 {
+				keyPreview = keyPreview[:20] + "..."
+			}
+			return fmt.Errorf("LLM API key validation failed: %w\nKey preview (first 20 chars): %s\nPlease verify your API key environment variable (LLM_API_KEY, OPENAI_API_KEY, etc.)", err, keyPreview)
 		}
 	}
 
@@ -191,94 +299,121 @@ func (o *pruningCronjobOptions) run() error {
 	yellow := color.New(color.FgYellow)
 	red := color.New(color.FgRed)
 
-	green.Println("Collecting diagnostic information for PruningCronjobErrorSRE alert...")
-	fmt.Printf("Output directory: %s\n\n", o.outputDir)
+	// Skip collection if analyzing existing directory
+	if o.skipCollection {
+		green.Println("Analyzing existing diagnostic artifacts...")
+		fmt.Printf("Directory: %s\n\n", o.outputDir)
+		
+		// Verify directory has some diagnostic files
+		files, err := filepath.Glob(filepath.Join(o.outputDir, "*.txt"))
+		if err == nil && len(files) == 0 {
+			// Also check for yaml/json files
+			yamlFiles, _ := filepath.Glob(filepath.Join(o.outputDir, "*.yaml"))
+			jsonFiles, _ := filepath.Glob(filepath.Join(o.outputDir, "*.json"))
+			if len(yamlFiles) == 0 && len(jsonFiles) == 0 {
+				return fmt.Errorf("directory appears to be empty or contains no diagnostic files: %s", o.outputDir)
+			}
+		}
+	} else {
+		green.Println("Collecting diagnostic information for PruningCronjobErrorSRE alert...")
+		fmt.Printf("Output directory: %s\n\n", o.outputDir)
 
-	// Create output directory
-	if err := os.MkdirAll(o.outputDir, 0755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
-	}
+		// Create output directory
+		if err := os.MkdirAll(o.outputDir, 0755); err != nil {
+			return fmt.Errorf("failed to create output directory: %w", err)
+		}
 
-	// Check if oc is available
-	if _, err := exec.LookPath("oc"); err != nil {
-		red.Println("Error: 'oc' command not found. Please ensure OpenShift CLI is installed and configured.")
-		return err
-	}
+		// Check if oc is available
+		if _, err := exec.LookPath("oc"); err != nil {
+			red.Println("Error: 'oc' command not found. Please ensure OpenShift CLI is installed and configured.")
+			return err
+		}
 
-	// Check if we're logged into a cluster
-	if err := o.commandExecutor("cluster-info", []string{}, "/dev/null"); err != nil {
-		red.Println("Error: Not logged into a cluster. Please run 'oc login' or 'ocm backplane login' first.")
-		return err
-	}
+		// Check if we're logged into a cluster
+		if err := o.commandExecutor("cluster-info", []string{}, "/dev/null"); err != nil {
+			red.Println("Error: Not logged into a cluster. Please run 'oc login' or 'ocm backplane login' first.")
+			return err
+		}
 
-	// Get cluster info
-	green.Println("Cluster Information:")
-	clusterID, _ := o.getClusterID()
-	fmt.Printf("Cluster ID: %s\n\n", clusterID)
+		// Get cluster info
+		green.Println("Cluster Information:")
+		clusterID, _ := o.getClusterID()
+		fmt.Printf("Cluster ID: %s\n\n", clusterID)
 
-	// Save cluster info
-	clusterInfoFile := filepath.Join(o.outputDir, "cluster-info.txt")
-	if err := o.writeFile(clusterInfoFile, fmt.Sprintf("Cluster ID: %s\nCollection Date: %s\n", clusterID, time.Now().Format(time.RFC3339))); err != nil {
-		return err
-	}
-	o.commandExecutor("cluster-info", []string{}, clusterInfoFile)
+		// Save cluster info
+		clusterInfoFile := filepath.Join(o.outputDir, "cluster-info.txt")
+		if err := o.writeFile(clusterInfoFile, fmt.Sprintf("Cluster ID: %s\nCollection Date: %s\n", clusterID, time.Now().Format(time.RFC3339))); err != nil {
+			return err
+		}
+		o.commandExecutor("cluster-info", []string{}, clusterInfoFile)
 
-	// Collect all diagnostic information
-	if err := o.collectJobs(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectPods(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectEvents(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectNetworkInfo(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectNodeExporterInfo(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectImageRegistryInfo(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectResourceQuotas(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectOVNInfo(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectCronJobInfo(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectSeccompErrors(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectNodeInfo(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectJobHistory(yellow, green, red); err != nil {
-		return err
-	}
-	if err := o.collectClusterVersion(yellow, green, red); err != nil {
-		return err
-	}
+		// Collect all diagnostic information
+		if err := o.collectJobs(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectPods(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectEvents(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectNetworkInfo(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectNodeExporterInfo(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectImageRegistryInfo(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectResourceQuotas(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectOVNInfo(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectCronJobInfo(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectSeccompErrors(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectNodeInfo(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectJobHistory(yellow, green, red); err != nil {
+			return err
+		}
+		if err := o.collectClusterVersion(yellow, green, red); err != nil {
+			return err
+		}
 
-	// Generate summary
-	if err := o.generateSummary(clusterID, green); err != nil {
-		return err
-	}
+		// Generate summary
+		if err := o.generateSummary(clusterID, green); err != nil {
+			return err
+		}
 
-	// Create tarball
-	green.Println("Creating archive...")
-	if err := o.createTarball(); err != nil {
-		// Non-fatal error
-		fmt.Printf("Warning: Failed to create archive: %v\n", err)
+		// Create tarball
+		green.Println("Creating archive...")
+		if err := o.createTarball(); err != nil {
+			// Non-fatal error
+			fmt.Printf("Warning: Failed to create archive: %v\n", err)
+		}
 	}
 
 	// LLM Analysis if enabled
 	if o.enableLLMAnalysis {
 		yellow.Println("\nAnalyzing diagnostics with LLM...")
+		
+		// Debug: Show which base URL and model are being used (without exposing API key)
+		fmt.Printf("Using LLM endpoint: %s\n", o.llmBaseURL)
+		fmt.Printf("Using model: %s\n", o.llmModel)
+		if len(o.llmAPIKey) > 0 {
+			keyPreview := o.llmAPIKey[:min(10, len(o.llmAPIKey))] + "..." + o.llmAPIKey[max(0, len(o.llmAPIKey)-10):]
+			fmt.Printf("API key preview: %s (length: %d)\n", keyPreview, len(o.llmAPIKey))
+		}
+		fmt.Println()
+		
 		diagnosticContent, err := o.extractAndReadDiagnostics()
 		if err != nil {
 			fmt.Printf("Warning: Failed to extract diagnostic content: %v\n", err)
@@ -837,6 +972,30 @@ func (o *pruningCronjobOptions) extractAndReadDiagnostics() (string, error) {
 	return content.String(), nil
 }
 
+// validateAPIKey performs basic validation on the API key format
+func validateAPIKey(apiKey string) error {
+	if apiKey == "" {
+		return fmt.Errorf("API key is empty")
+	}
+	
+	// Trim and check again
+	trimmed := strings.TrimSpace(apiKey)
+	if trimmed != apiKey {
+		return fmt.Errorf("API key contains leading or trailing whitespace (length: %d -> %d after trim)", len(apiKey), len(trimmed))
+	}
+	
+	// Basic length check - very short keys are likely invalid
+	if len(apiKey) < 10 {
+		return fmt.Errorf("API key appears too short (length: %d). Valid API keys are typically longer", len(apiKey))
+	}
+	
+	// Don't reject based on format prefix - different providers use different formats
+	// (e.g., OpenAI uses "sk-", some proxies use "sha256~", etc.)
+	// Let the API call itself determine if the key is valid
+	
+	return nil
+}
+
 // analyzeWithLLM sends diagnostic content to LLM for analysis
 func (o *pruningCronjobOptions) analyzeWithLLM(diagnosticContent string) (string, error) {
 	systemPrompt := systemPromptTemplate
@@ -874,13 +1033,24 @@ Be concise but thorough. Focus on actionable insights.`
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", o.llmBaseURL+"/chat/completions", bytes.NewBuffer(jsonData))
+	// Construct URL - ensure base URL doesn't have trailing slash, and endpoint does
+	baseURL := strings.TrimSuffix(o.llmBaseURL, "/")
+	endpoint := "/chat/completions"
+	url := baseURL + endpoint
+	
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
+	// Set headers - ensure API key is properly trimmed (remove any whitespace, newlines, etc.)
+	apiKey := strings.TrimSpace(o.llmAPIKey)
+	// Remove any potential newlines or carriage returns that might have been introduced
+	apiKey = strings.ReplaceAll(apiKey, "\n", "")
+	apiKey = strings.ReplaceAll(apiKey, "\r", "")
+	
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+o.llmAPIKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	client := &http.Client{
 		Timeout: 120 * time.Second,
@@ -894,7 +1064,33 @@ Be concise but thorough. Focus on actionable insights.`
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
+		
+		// Parse error response for better error messages
+		var errorResp struct {
+			Error struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+				Code    string `json:"code"`
+			} `json:"error"`
+		}
+		
+		errorMsg := string(body)
+		if err := json.Unmarshal(body, &errorResp); err == nil && errorResp.Error.Message != "" {
+			errorMsg = errorResp.Error.Message
+			
+			// Provide generic guidance for authentication errors
+			if resp.StatusCode == 401 {
+				return "", fmt.Errorf("authentication failed (401): %s\n\nTroubleshooting:\n"+
+					"1. Verify your API key is correct\n"+
+					"2. Ensure there are no extra spaces or newlines in the key\n"+
+					"3. Check your environment variables: LLM_API_KEY, OPENAI_API_KEY, etc.\n"+
+					"4. Verify the API key format matches your LLM provider's requirements\n"+
+					"5. Confirm the base URL (%s) is correct for your LLM provider",
+					errorMsg, o.llmBaseURL)
+			}
+		}
+		
+		return "", fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, errorMsg)
 	}
 
 	var response struct {
@@ -914,4 +1110,19 @@ Be concise but thorough. Focus on actionable insights.`
 	}
 
 	return response.Choices[0].Message.Content, nil
+}
+
+// Helper functions for min/max
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
