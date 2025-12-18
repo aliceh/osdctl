@@ -75,14 +75,14 @@ func loadConfigValue(configKey, envVarName, defaultValue string) string {
 			}
 		}
 	}
-	
+
 	// Fall back to environment variable if envVarName is provided
 	if envVarName != "" {
 		if envValue := os.Getenv(envVarName); envValue != "" {
 			return strings.TrimSpace(envValue)
 		}
 	}
-	
+
 	// Return default if provided
 	return defaultValue
 }
@@ -193,7 +193,7 @@ func (o *pruningCronjobOptions) complete(cmd *cobra.Command, _ []string) error {
 			// Also trim if provided via flag
 			o.llmAPIKey = strings.TrimSpace(o.llmAPIKey)
 		}
-		
+
 		// Base URL: Priority: flag > config file > environment variables > default
 		if o.llmBaseURL == "" {
 			// Check config file first
@@ -213,7 +213,7 @@ func (o *pruningCronjobOptions) complete(cmd *cobra.Command, _ []string) error {
 				}
 			}
 		}
-		
+
 		// Model: Priority: flag (if explicitly set) > config file > environment variables > default
 		// Only override default if flag wasn't explicitly changed by user
 		if !cmd.Flags().Changed("llm-model") {
@@ -230,7 +230,7 @@ func (o *pruningCronjobOptions) complete(cmd *cobra.Command, _ []string) error {
 				}
 			}
 		}
-		
+
 		// Validate required configuration
 		if o.llmAPIKey == "" {
 			// Check if any of the common environment variables exist
@@ -246,7 +246,7 @@ func (o *pruningCronjobOptions) complete(cmd *cobra.Command, _ []string) error {
 			}
 			return fmt.Errorf("LLM analysis enabled but no API key provided. Set --llm-api-key flag or one of these environment variables: LLM_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY")
 		}
-		
+
 		// Validate API key format (basic check)
 		if err := validateAPIKey(o.llmAPIKey); err != nil {
 			// Show first few characters for debugging (safely)
@@ -265,9 +265,9 @@ func (o *pruningCronjobOptions) complete(cmd *cobra.Command, _ []string) error {
 func defaultCommandExecutor(name string, args []string, outputFile string) error {
 	cmdArgs := []string{name}
 	cmdArgs = append(cmdArgs, args...)
-	
+
 	cmd := exec.Command("oc", cmdArgs...)
-	
+
 	if outputFile == "/dev/null" {
 		cmd.Stdout = nil
 		cmd.Stderr = nil
@@ -289,7 +289,7 @@ func defaultCommandExecutor(name string, args []string, outputFile string) error
 func defaultCommandRunner(name string, args []string) (string, error) {
 	cmdArgs := []string{name}
 	cmdArgs = append(cmdArgs, args...)
-	
+
 	cmd := exec.Command("oc", cmdArgs...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
@@ -304,7 +304,7 @@ func (o *pruningCronjobOptions) run() error {
 	if o.skipCollection {
 		green.Println("Analyzing existing diagnostic artifacts...")
 		fmt.Printf("Directory: %s\n\n", o.outputDir)
-		
+
 		// Verify directory has some diagnostic files
 		files, err := filepath.Glob(filepath.Join(o.outputDir, "*.txt"))
 		if err == nil && len(files) == 0 {
@@ -405,7 +405,7 @@ func (o *pruningCronjobOptions) run() error {
 	// LLM Analysis if enabled
 	if o.enableLLMAnalysis {
 		yellow.Println("\nAnalyzing diagnostics with LLM...")
-		
+
 		// Debug: Show which base URL and model are being used (without exposing API key)
 		fmt.Printf("Using LLM endpoint: %s\n", o.llmBaseURL)
 		fmt.Printf("Using model: %s\n", o.llmModel)
@@ -414,7 +414,7 @@ func (o *pruningCronjobOptions) run() error {
 			fmt.Printf("API key preview: %s (length: %d)\n", keyPreview, len(o.llmAPIKey))
 		}
 		fmt.Println()
-		
+
 		diagnosticContent, err := o.extractAndReadDiagnostics()
 		if err != nil {
 			fmt.Printf("Warning: Failed to extract diagnostic content: %v\n", err)
@@ -738,13 +738,29 @@ func (o *pruningCronjobOptions) collectCronJobInfo(yellow, green, red *color.Col
 	} else {
 		green.Printf("  ✓ Saved to 13-cronjobs.yaml\n\n")
 	}
+
+	// Collect specific cronjob yamls
+	yellow.Println("Collecting: builds-pruner cronjob yaml")
+	if err := o.runOCCommand("get", []string{"cronjob", "builds-pruner", "-n", "openshift-sre-pruning", "-o", "yaml"}, filepath.Join(o.outputDir, "13-cronjob-builds-pruner.yaml")); err != nil {
+		red.Printf("  ✗ Failed to collect builds-pruner cronjob yaml\n\n")
+	} else {
+		green.Printf("  ✓ Saved to 13-cronjob-builds-pruner.yaml\n\n")
+	}
+
+	yellow.Println("Collecting: deployments-pruner cronjob yaml")
+	if err := o.runOCCommand("get", []string{"cronjob", "deployments-pruner", "-n", "openshift-sre-pruning", "-o", "yaml"}, filepath.Join(o.outputDir, "13-cronjob-deployments-pruner.yaml")); err != nil {
+		red.Printf("  ✗ Failed to collect deployments-pruner cronjob yaml\n\n")
+	} else {
+		green.Printf("  ✓ Saved to 13-cronjob-deployments-pruner.yaml\n\n")
+	}
+
 	return nil
 }
 
 func (o *pruningCronjobOptions) collectSeccompErrors(yellow, green, red *color.Color) error {
 	safeColorPrintln(yellow, "Collecting: Checking for seccomp errors in pod descriptions")
 	output, _ := o.runOCCommandWithOutput("get", []string{"pod", "-n", "openshift-sre-pruning", "-o", "json"})
-	
+
 	var podList struct {
 		Items []struct {
 			Metadata struct {
@@ -803,7 +819,7 @@ func (o *pruningCronjobOptions) collectNodeInfo(yellow, green, red *color.Color)
 func (o *pruningCronjobOptions) collectJobHistory(yellow, green, red *color.Color) error {
 	safeColorPrintln(yellow, "Collecting: Recent job history")
 	output, _ := o.runOCCommandWithOutput("get", []string{"job", "-n", "openshift-sre-pruning", "-o", "json"})
-	
+
 	var jobList struct {
 		Items []struct {
 			Metadata struct {
@@ -852,7 +868,7 @@ func (o *pruningCronjobOptions) collectClusterVersion(yellow, green, red *color.
 
 func (o *pruningCronjobOptions) generateSummary(clusterID string, green *color.Color) error {
 	safeColorPrintln(green, "Generating summary report...")
-	
+
 	summaryFile := filepath.Join(o.outputDir, "00-SUMMARY.txt")
 	summary := fmt.Sprintf(`PruningCronjobErrorSRE Diagnostic Collection Summary
 ====================================================
@@ -983,22 +999,22 @@ func validateAPIKey(apiKey string) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key is empty")
 	}
-	
+
 	// Trim and check again
 	trimmed := strings.TrimSpace(apiKey)
 	if trimmed != apiKey {
 		return fmt.Errorf("API key contains leading or trailing whitespace (length: %d -> %d after trim)", len(apiKey), len(trimmed))
 	}
-	
+
 	// Basic length check - very short keys are likely invalid
 	if len(apiKey) < 10 {
 		return fmt.Errorf("API key appears too short (length: %d). Valid API keys are typically longer", len(apiKey))
 	}
-	
+
 	// Don't reject based on format prefix - different providers use different formats
 	// (e.g., OpenAI uses "sk-", some proxies use "sha256~", etc.)
 	// Let the API call itself determine if the key is valid
-	
+
 	return nil
 }
 
@@ -1037,8 +1053,8 @@ Be concise but thorough. Focus on actionable insights.`
 	}
 
 	requestBody := map[string]interface{}{
-		"model":    o.llmModel,
-		"messages": conversationHistory,
+		"model":       o.llmModel,
+		"messages":    conversationHistory,
 		"temperature": 0.3,
 		"max_tokens":  4000,
 	}
@@ -1052,7 +1068,7 @@ Be concise but thorough. Focus on actionable insights.`
 	baseURL := strings.TrimSuffix(o.llmBaseURL, "/")
 	endpoint := "/chat/completions"
 	url := baseURL + endpoint
-	
+
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to create request: %w", err)
@@ -1063,7 +1079,7 @@ Be concise but thorough. Focus on actionable insights.`
 	// Remove any potential newlines or carriage returns that might have been introduced
 	apiKey = strings.ReplaceAll(apiKey, "\n", "")
 	apiKey = strings.ReplaceAll(apiKey, "\r", "")
-	
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
@@ -1079,7 +1095,7 @@ Be concise but thorough. Focus on actionable insights.`
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		
+
 		// Parse error response for better error messages
 		var errorResp struct {
 			Error struct {
@@ -1088,11 +1104,11 @@ Be concise but thorough. Focus on actionable insights.`
 				Code    string `json:"code"`
 			} `json:"error"`
 		}
-		
+
 		errorMsg := string(body)
 		if err := json.Unmarshal(body, &errorResp); err == nil && errorResp.Error.Message != "" {
 			errorMsg = errorResp.Error.Message
-			
+
 			// Provide generic guidance for authentication errors
 			if resp.StatusCode == 401 {
 				return "", nil, fmt.Errorf("authentication failed (401): %s\n\nTroubleshooting:\n"+
@@ -1104,7 +1120,7 @@ Be concise but thorough. Focus on actionable insights.`
 					errorMsg, o.llmBaseURL)
 			}
 		}
-		
+
 		return "", nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, errorMsg)
 	}
 
@@ -1125,7 +1141,7 @@ Be concise but thorough. Focus on actionable insights.`
 	}
 
 	assistantResponse := response.Choices[0].Message.Content
-	
+
 	// Add assistant response to conversation history
 	conversationHistory = append(conversationHistory, Message{
 		Role:    "assistant",
@@ -1144,8 +1160,8 @@ func (o *pruningCronjobOptions) askFollowUpQuestion(conversationHistory []Messag
 	})
 
 	requestBody := map[string]interface{}{
-		"model":    o.llmModel,
-		"messages": conversationHistory,
+		"model":       o.llmModel,
+		"messages":    conversationHistory,
 		"temperature": 0.3,
 		"max_tokens":  4000,
 	}
@@ -1190,12 +1206,12 @@ func (o *pruningCronjobOptions) askFollowUpQuestion(conversationHistory []Messag
 				Message string `json:"message"`
 			} `json:"error"`
 		}
-		
+
 		errorMsg := string(body)
 		if err := json.Unmarshal(body, &errorResp); err == nil && errorResp.Error.Message != "" {
 			errorMsg = errorResp.Error.Message
 		}
-		
+
 		return "", conversationHistory, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, errorMsg)
 	}
 
@@ -1216,7 +1232,7 @@ func (o *pruningCronjobOptions) askFollowUpQuestion(conversationHistory []Messag
 	}
 
 	assistantResponse := response.Choices[0].Message.Content
-	
+
 	// Add assistant response to conversation history
 	conversationHistory = append(conversationHistory, Message{
 		Role:    "assistant",
@@ -1229,14 +1245,14 @@ func (o *pruningCronjobOptions) askFollowUpQuestion(conversationHistory []Messag
 // interactiveFollowUp handles interactive follow-up questions
 func (o *pruningCronjobOptions) interactiveFollowUp(conversationHistory []Message, green, yellow *color.Color) error {
 	scanner := bufio.NewScanner(os.Stdin)
-	
+
 	yellow.Println("\n=== Interactive Follow-up ===")
 	fmt.Println("You can ask follow-up questions about the analysis. Type 'exit' or 'quit' to finish.")
 	fmt.Println()
 
 	for {
 		green.Print("Question (or 'exit' to finish): ")
-		
+
 		if !scanner.Scan() {
 			// Handle EOF (Ctrl+D)
 			if err := scanner.Err(); err != nil {
@@ -1246,7 +1262,7 @@ func (o *pruningCronjobOptions) interactiveFollowUp(conversationHistory []Messag
 		}
 
 		question := strings.TrimSpace(scanner.Text())
-		
+
 		// Check for exit commands
 		if question == "" {
 			continue
