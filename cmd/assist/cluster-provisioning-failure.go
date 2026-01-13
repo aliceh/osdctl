@@ -23,6 +23,21 @@ import (
 //go:embed prompts/cluster_provisioning_failure_analysis.md
 var clusterProvisioningSystemPromptTemplate string
 
+//go:embed prompts/permissions_analysis.md
+var permissionsAnalysisPromptTemplate string
+
+//go:embed prompts/quota_analysis.md
+var quotaAnalysisPromptTemplate string
+
+//go:embed prompts/network_analysis.md
+var networkAnalysisPromptTemplate string
+
+//go:embed prompts/infrastructure_analysis.md
+var infrastructureAnalysisPromptTemplate string
+
+//go:embed prompts/summary_analysis.md
+var summaryAnalysisPromptTemplate string
+
 type clusterProvisioningFailureOptions struct {
 	outputDir         string
 	existingDir       string // Directory with existing artifacts to analyze
@@ -370,6 +385,7 @@ func (o *clusterProvisioningFailureOptions) run() error {
 					fmt.Printf("Warning: Failed to save LLM analysis: %v\n", err)
 				} else {
 					green.Printf("✓ LLM analysis saved to 10-llm-analysis.txt\n")
+					green.Println("  This includes analyses from: Permissions, Quota, Network, Infrastructure, and Summary agents")
 				}
 
 				// Interactive follow-up questions
@@ -1108,29 +1124,8 @@ func (o *clusterProvisioningFailureOptions) extractAndReadDiagnostics() (string,
 	return content.String(), nil
 }
 
-// analyzeWithLLM sends diagnostic content to LLM for analysis and returns the response and conversation history
-func (o *clusterProvisioningFailureOptions) analyzeWithLLM(diagnosticContent string) (string, []Message, error) {
-	systemPrompt := clusterProvisioningSystemPromptTemplate
-	// Fallback to default if embed failed (shouldn't happen, but be safe)
-	if systemPrompt == "" {
-		systemPrompt = `You are an expert OpenShift/Kubernetes Site Reliability Engineer (SRE) specializing in cluster installation and provisioning. Your task is to analyze diagnostic information and assess cluster provisioning failures on OpenShift clusters.
-
-Analyze the provided diagnostic data and provide:
-1. Root cause analysis - What is likely causing the cluster provisioning failure?
-2. Key findings - What are the most important issues identified?
-3. Recommended actions - What steps should be taken to resolve the issues?
-4. Priority - Rate the severity (Critical/High/Medium/Low)
-
-Focus on:
-- ClusterOperators that are degraded, unavailable, or progressing
-- Node provisioning issues
-- Machine API problems
-- Infrastructure configuration issues
-- Installation progress and any stuck components
-
-Be concise but thorough. Focus on actionable insights.`
-	}
-
+// runAgent runs a single LLM agent with the given system prompt and user content
+func (o *clusterProvisioningFailureOptions) runAgent(systemPrompt, userContent string) (string, error) {
 	// Build conversation history
 	conversationHistory := []Message{
 		{
@@ -1139,7 +1134,7 @@ Be concise but thorough. Focus on actionable insights.`
 		},
 		{
 			Role:    "user",
-			Content: fmt.Sprintf("Please analyze the following cluster provisioning failure diagnostic information from an OpenShift cluster:\n\n%s", diagnosticContent),
+			Content: userContent,
 		},
 	}
 
@@ -1152,7 +1147,7 @@ Be concise but thorough. Focus on actionable insights.`
 
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to marshal request: %w", err)
+		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	// Construct URL - ensure base URL doesn't have trailing slash, and endpoint does
@@ -1162,7 +1157,7 @@ Be concise but thorough. Focus on actionable insights.`
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to create request: %w", err)
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Set headers - ensure API key is properly trimmed (remove any whitespace, newlines, etc.)
@@ -1180,7 +1175,7 @@ Be concise but thorough. Focus on actionable insights.`
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to send request: %w", err)
+		return "", fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -1202,7 +1197,7 @@ Be concise but thorough. Focus on actionable insights.`
 
 			// Provide generic guidance for authentication errors
 			if resp.StatusCode == 401 {
-				return "", nil, fmt.Errorf("authentication failed (401): %s\n\nTroubleshooting:\n"+
+				return "", fmt.Errorf("authentication failed (401): %s\n\nTroubleshooting:\n"+
 					"1. Verify your API key is correct\n"+
 					"2. Ensure there are no extra spaces or newlines in the key\n"+
 					"3. Check your environment variables: LLM_API_KEY, OPENAI_API_KEY, etc.\n"+
@@ -1212,7 +1207,7 @@ Be concise but thorough. Focus on actionable insights.`
 			}
 		}
 
-		return "", nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, errorMsg)
+		return "", fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, errorMsg)
 	}
 
 	var response struct {
@@ -1224,22 +1219,140 @@ Be concise but thorough. Focus on actionable insights.`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return "", nil, fmt.Errorf("failed to decode response: %w", err)
+		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	if len(response.Choices) == 0 {
-		return "", nil, fmt.Errorf("no response from LLM")
+		return "", fmt.Errorf("no response from LLM")
 	}
 
-	assistantResponse := response.Choices[0].Message.Content
+	return response.Choices[0].Message.Content, nil
+}
 
-	// Add assistant response to conversation history
-	conversationHistory = append(conversationHistory, Message{
-		Role:    "assistant",
-		Content: assistantResponse,
-	})
+// analyzeWithLLM runs multiple specialized agents and then a summary agent
+func (o *clusterProvisioningFailureOptions) analyzeWithLLM(diagnosticContent string) (string, []Message, error) {
+	var allAnalyses strings.Builder
+	var conversationHistory []Message
 
-	return assistantResponse, conversationHistory, nil
+	// Run specialized agents
+	yellow := color.New(color.FgYellow)
+	green := color.New(color.FgGreen)
+
+	// 1. Permissions Analysis
+	yellow.Println("Running Permissions Analysis Agent...")
+	permissionsPrompt := permissionsAnalysisPromptTemplate
+	if permissionsPrompt == "" {
+		permissionsPrompt = "You are an expert in cloud IAM and permissions analysis."
+	}
+	permissionsAnalysis, err := o.runAgent(permissionsPrompt, fmt.Sprintf("Analyze the following cluster provisioning failure diagnostic information for permission-related issues:\n\n%s", diagnosticContent))
+	if err != nil {
+		fmt.Printf("Warning: Permissions analysis failed: %v\n", err)
+		permissionsAnalysis = "Permissions Analysis: Failed to analyze due to error."
+	} else {
+		green.Println("✓ Permissions analysis completed")
+		allAnalyses.WriteString("=== PERMISSIONS ANALYSIS ===\n")
+		allAnalyses.WriteString(permissionsAnalysis)
+		allAnalyses.WriteString("\n\n")
+	}
+
+	// 2. Quota Analysis
+	yellow.Println("Running Quota Analysis Agent...")
+	quotaPrompt := quotaAnalysisPromptTemplate
+	if quotaPrompt == "" {
+		quotaPrompt = "You are an expert in cloud resource quotas and limits."
+	}
+	quotaAnalysis, err := o.runAgent(quotaPrompt, fmt.Sprintf("Analyze the following cluster provisioning failure diagnostic information for quota-related issues:\n\n%s", diagnosticContent))
+	if err != nil {
+		fmt.Printf("Warning: Quota analysis failed: %v\n", err)
+		quotaAnalysis = "Quota Analysis: Failed to analyze due to error."
+	} else {
+		green.Println("✓ Quota analysis completed")
+		allAnalyses.WriteString("=== QUOTA ANALYSIS ===\n")
+		allAnalyses.WriteString(quotaAnalysis)
+		allAnalyses.WriteString("\n\n")
+	}
+
+	// 3. Network Analysis
+	yellow.Println("Running Network Analysis Agent...")
+	networkPrompt := networkAnalysisPromptTemplate
+	if networkPrompt == "" {
+		networkPrompt = "You are an expert in network infrastructure and configuration."
+	}
+	networkAnalysis, err := o.runAgent(networkPrompt, fmt.Sprintf("Analyze the following cluster provisioning failure diagnostic information for network-related issues:\n\n%s", diagnosticContent))
+	if err != nil {
+		fmt.Printf("Warning: Network analysis failed: %v\n", err)
+		networkAnalysis = "Network Analysis: Failed to analyze due to error."
+	} else {
+		green.Println("✓ Network analysis completed")
+		allAnalyses.WriteString("=== NETWORK ANALYSIS ===\n")
+		allAnalyses.WriteString(networkAnalysis)
+		allAnalyses.WriteString("\n\n")
+	}
+
+	// 4. Infrastructure Analysis
+	yellow.Println("Running Infrastructure Analysis Agent...")
+	infrastructurePrompt := infrastructureAnalysisPromptTemplate
+	if infrastructurePrompt == "" {
+		infrastructurePrompt = "You are an expert in cloud infrastructure provisioning."
+	}
+	infrastructureAnalysis, err := o.runAgent(infrastructurePrompt, fmt.Sprintf("Analyze the following cluster provisioning failure diagnostic information for infrastructure-related issues:\n\n%s", diagnosticContent))
+	if err != nil {
+		fmt.Printf("Warning: Infrastructure analysis failed: %v\n", err)
+		infrastructureAnalysis = "Infrastructure Analysis: Failed to analyze due to error."
+	} else {
+		green.Println("✓ Infrastructure analysis completed")
+		allAnalyses.WriteString("=== INFRASTRUCTURE ANALYSIS ===\n")
+		allAnalyses.WriteString(infrastructureAnalysis)
+		allAnalyses.WriteString("\n\n")
+	}
+
+	// 5. Summary Analysis (synthesizes all specialized analyses)
+	yellow.Println("Running Summary Analysis Agent...")
+	summaryPrompt := summaryAnalysisPromptTemplate
+	if summaryPrompt == "" {
+		summaryPrompt = "You are an expert SRE specializing in synthesizing multiple analyses into a comprehensive summary."
+	}
+
+	// Build the summary prompt with all specialized analyses
+	summaryContent := fmt.Sprintf(`The following are analyses from specialized agents for a cluster provisioning failure:
+
+%s
+
+=== ORIGINAL DIAGNOSTIC DATA ===
+%s
+
+Please synthesize the above specialized analyses and provide a comprehensive summary with root cause identification, confidence assessment, and recommended actions.`, allAnalyses.String(), diagnosticContent)
+
+	summaryAnalysis, err := o.runAgent(summaryPrompt, summaryContent)
+	if err != nil {
+		return "", nil, fmt.Errorf("summary analysis failed: %w", err)
+	}
+	green.Println("✓ Summary analysis completed")
+
+	// Build final analysis output
+	var finalAnalysis strings.Builder
+	finalAnalysis.WriteString("=== SPECIALIZED AGENT ANALYSES ===\n\n")
+	finalAnalysis.WriteString(allAnalyses.String())
+	finalAnalysis.WriteString("\n=== SUMMARY ANALYSIS (Synthesized) ===\n\n")
+	finalAnalysis.WriteString(summaryAnalysis)
+
+	// Build conversation history for follow-up questions
+	conversationHistory = []Message{
+		{
+			Role:    "system",
+			Content: summaryPrompt,
+		},
+		{
+			Role:    "user",
+			Content: summaryContent,
+		},
+		{
+			Role:    "assistant",
+			Content: summaryAnalysis,
+		},
+	}
+
+	return finalAnalysis.String(), conversationHistory, nil
 }
 
 // askFollowUpQuestion sends a follow-up question to the LLM with conversation history
