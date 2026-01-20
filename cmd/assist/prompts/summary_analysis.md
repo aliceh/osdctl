@@ -217,6 +217,8 @@ Numbered list of specific remediation steps in priority order, synthesizing reco
 
 Be specific with commands, configuration changes, or verification steps where applicable.
 
+**CRITICAL**: When recommending cloud provider permissions (AWS, GCP, Azure), you MUST use exact, verified permission names from official documentation. DO NOT invent or guess permission names. If you are uncertain about a permission name, state your uncertainty and recommend checking official documentation.
+
 ### 📈 **Confidence Level**
 An integer between 0 and 100 indicating your confidence in the root cause assessment, with justification.
 
