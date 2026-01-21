@@ -54,6 +54,8 @@ The following error messages and log entries are commonly seen in OpenShift inst
 - **Failed to configure authentication operator** - Usually a configuration issue, not a permissions problem
 - **Error creating service mesh** - Often a resource or configuration issue, not permissions
 - **Network connectivity issues** - These are symptoms, not root causes. Look for the underlying permission issue that prevents network resource creation.
+- **Failed to gather bootstrap logs** - This is a symptom of the cluster not being accessible or not fully provisioned yet, not a permissions problem. The real issue is what prevented the bootstrap from completing successfully.
+- **Failed to gather bootstrap logs with connection timeout errors** - Errors matching patterns like "Failed to gather bootstrap logs: failed to connect to the bootstrap machine: dial tcp ...: connect: connection timed out" are symptoms of the bootstrap machine not being accessible, not permission issues. The real issue is what prevented the bootstrap machine from becoming accessible (e.g., network configuration, security groups, instance provisioning failures).
 
 ### What to Look For Instead:
 Focus on these genuine permission indicators:

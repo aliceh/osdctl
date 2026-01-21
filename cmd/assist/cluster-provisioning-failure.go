@@ -371,20 +371,21 @@ func (o *clusterProvisioningFailureOptions) run() error {
 		if err != nil {
 			fmt.Printf("Warning: Failed to extract diagnostic content: %v\n", err)
 		} else {
-			analysis, conversationHistory, err := o.analyzeWithLLM(diagnosticContent)
+			fullAnalysis, summaryAnalysis, conversationHistory, err := o.analyzeWithLLM(diagnosticContent)
 			if err != nil {
 				fmt.Printf("Warning: LLM analysis failed: %v\n", err)
 			} else {
-				green.Println("\n=== LLM Analysis Results ===")
-				fmt.Println(analysis)
+				// Print only the summary analysis to console
+				green.Println("\n=== LLM Analysis Summary ===")
+				fmt.Println(summaryAnalysis)
 				fmt.Println()
 
-				// Save analysis to file
+				// Save full analysis (all specialized agents + summary) to file
 				analysisFile := filepath.Join(o.outputDir, "10-llm-analysis.txt")
-				if err := o.writeFile(analysisFile, analysis); err != nil {
+				if err := o.writeFile(analysisFile, fullAnalysis); err != nil {
 					fmt.Printf("Warning: Failed to save LLM analysis: %v\n", err)
 				} else {
-					green.Printf("✓ LLM analysis saved to 10-llm-analysis.txt\n")
+					green.Printf("✓ Full LLM analysis saved to 10-llm-analysis.txt\n")
 					green.Println("  This includes analyses from: Permissions, Quota, Network, Infrastructure, and Summary agents")
 				}
 
@@ -1230,7 +1231,8 @@ func (o *clusterProvisioningFailureOptions) runAgent(systemPrompt, userContent s
 }
 
 // analyzeWithLLM runs multiple specialized agents and then a summary agent
-func (o *clusterProvisioningFailureOptions) analyzeWithLLM(diagnosticContent string) (string, []Message, error) {
+// Returns: fullAnalysis (for file), summaryAnalysis (for console), conversationHistory, error
+func (o *clusterProvisioningFailureOptions) analyzeWithLLM(diagnosticContent string) (string, string, []Message, error) {
 	var allAnalyses strings.Builder
 	var conversationHistory []Message
 
@@ -1325,16 +1327,16 @@ Please synthesize the above specialized analyses and provide a comprehensive sum
 
 	summaryAnalysis, err := o.runAgent(summaryPrompt, summaryContent)
 	if err != nil {
-		return "", nil, fmt.Errorf("summary analysis failed: %w", err)
+		return "", "", nil, fmt.Errorf("summary analysis failed: %w", err)
 	}
 	green.Println("✓ Summary analysis completed")
 
-	// Build final analysis output
-	var finalAnalysis strings.Builder
-	finalAnalysis.WriteString("=== SPECIALIZED AGENT ANALYSES ===\n\n")
-	finalAnalysis.WriteString(allAnalyses.String())
-	finalAnalysis.WriteString("\n=== SUMMARY ANALYSIS (Synthesized) ===\n\n")
-	finalAnalysis.WriteString(summaryAnalysis)
+	// Build full analysis output (for file) - includes all specialized analyses + summary
+	var fullAnalysis strings.Builder
+	fullAnalysis.WriteString("=== SPECIALIZED AGENT ANALYSES ===\n\n")
+	fullAnalysis.WriteString(allAnalyses.String())
+	fullAnalysis.WriteString("\n=== SUMMARY ANALYSIS (Synthesized) ===\n\n")
+	fullAnalysis.WriteString(summaryAnalysis)
 
 	// Build conversation history for follow-up questions
 	conversationHistory = []Message{
@@ -1352,7 +1354,8 @@ Please synthesize the above specialized analyses and provide a comprehensive sum
 		},
 	}
 
-	return finalAnalysis.String(), conversationHistory, nil
+	// Return full analysis (for file), summary analysis (for console), conversation history
+	return fullAnalysis.String(), summaryAnalysis, conversationHistory, nil
 }
 
 // askFollowUpQuestion sends a follow-up question to the LLM with conversation history

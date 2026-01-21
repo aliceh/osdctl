@@ -55,6 +55,8 @@ The following error messages and log entries are commonly seen in OpenShift inst
 - **Error creating service mesh** - Often a resource or configuration issue, not quotas
 - **Resource creation timeout** - Often indicates network or configuration issues, not quota limits
 - **Instance launch failure** - Usually indicates instance type availability or configuration issues, not quota problems
+- **Failed to gather bootstrap logs** - This is a symptom of the cluster not being accessible or not fully provisioned yet, not a quota problem. The real issue is what prevented the bootstrap from completing successfully.
+- **Failed to gather bootstrap logs with connection timeout errors** - Errors matching patterns like "Failed to gather bootstrap logs: failed to connect to the bootstrap machine: dial tcp ...: connect: connection timed out" are symptoms of the bootstrap machine not being accessible, not quota issues. The real issue is what prevented the bootstrap machine from becoming accessible (e.g., network configuration, security groups, instance provisioning failures).
 
 ### What to Look For Instead:
 Focus on these genuine quota indicators:

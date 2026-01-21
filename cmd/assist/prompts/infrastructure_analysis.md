@@ -44,6 +44,8 @@ The following error messages and log entries are commonly seen in OpenShift inst
 - **Timeout waiting for cluster to be ready** - This is typically a timing issue, not related to infrastructure
 - **Network connectivity issues** - These are symptoms, not root causes. Look for the underlying infrastructure issue.
 - **DNS resolution failures** - These are symptoms of infrastructure problems, not root causes themselves.
+- **Failed to gather bootstrap logs** - This is a symptom of the cluster not being accessible or not fully provisioned yet, not an infrastructure provisioning issue. The real issue is what prevented the bootstrap from completing successfully.
+- **Failed to gather bootstrap logs with connection timeout errors** - Errors matching patterns like "Failed to gather bootstrap logs: failed to connect to the bootstrap machine: dial tcp ...: connect: connection timed out" are symptoms of the bootstrap machine not being accessible, not infrastructure provisioning issues. The real issue is what prevented the bootstrap machine from becoming accessible (e.g., security group configuration, firewall rules, or the instance not being fully provisioned/started).
 
 ### What to Look For Instead:
 Focus on these genuine infrastructure indicators:

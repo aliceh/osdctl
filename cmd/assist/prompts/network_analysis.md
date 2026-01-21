@@ -51,6 +51,8 @@ The following error messages and log entries are commonly seen in OpenShift inst
 - **DNS resolution failures for openshiftapps.com subdomains** - These are usually symptoms of the cluster not being ready, not DNS configuration problems
 - **API server connectivity timeouts** - These are often symptoms of the control plane not being ready, not network issues
 - **Temporary network errors during installation** - These are often transient and not root causes
+- **Failed to gather bootstrap logs** - This is a symptom of the cluster not being accessible or not fully provisioned yet, not a network configuration issue. The real issue is what prevented the bootstrap from completing successfully.
+- **Failed to gather bootstrap logs with connection timeout errors** - Errors matching patterns like "Failed to gather bootstrap logs: failed to connect to the bootstrap machine: dial tcp ...: connect: connection timed out" are symptoms of the bootstrap machine not being accessible. While this involves network connectivity, it's usually a symptom of underlying issues like security group misconfiguration, firewall rules, or the bootstrap instance not being fully provisioned, rather than a network configuration root cause itself.
 
 ### What to Look For Instead:
 Focus on these genuine network configuration indicators:

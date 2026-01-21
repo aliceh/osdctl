@@ -138,6 +138,8 @@ These are ALL symptoms of underlying infrastructure issues, not root causes them
 13. **Error creating service mesh** - Often a resource or configuration issue, not a generic error
 14. **Resource creation timeout** - Often indicates network or configuration issues, not generic errors
 15. **Instance launch failure** - Usually indicates instance type availability or configuration issues, not generic error problems
+16. **Failed to gather bootstrap logs** - This is a symptom of the cluster not being accessible or not fully provisioned yet, not a root cause. The real issue is what prevented the bootstrap from completing successfully.
+17. **Failed to gather bootstrap logs with connection timeout errors** - Errors matching patterns like "Failed to gather bootstrap logs: failed to connect to the bootstrap machine: dial tcp ...: connect: connection timed out" are symptoms of the bootstrap machine not being accessible, not root causes. The real issue is what prevented the bootstrap machine from becoming accessible (e.g., network configuration, security groups, instance provisioning failures).
 
 ### Root Cause Assessment:
 - Look for the most fundamental issue that, if resolved, would prevent the failure
